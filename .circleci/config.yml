@@ -1,15 +1,115 @@
+defaults: &defaults
+  working_directory: ~/repo
+  docker:
+    - image: circleci/openjdk:8-jdk-browsers
+  environment:
+    GRADLE_USER_HOME: ~/repo/.gradle
+    user: micronaut-ci
+    JVM_OPTS: -Xmx1g
+    TERM: dumb    
+
+
 version: 2
 jobs:
-  build:
-    working_directory: ~/repo
-    docker:
-      - image: circleci/openjdk:8-jdk-browsers
-    environment:
-      JVM_OPTS: -Xmx3200m
-      TERM: dumb
+  checkout:
+    <<: *defaults
+
     steps:
+      - restore_cache:
+          keys:
+            - repo-v1-{{ .Branch }}-{{ .Revision}}
+            - repo-v1-{{ .Branch }}-
+            - repo-v1-
+
+      - restore_cache:
+          name: M2 Cache
+          keys:
+            - m2-v1-{{ .Branch }}-{{ .Revision}}
+            - m2-v1-{{ .Branch }}-
+            - m2-v1-
+
       - checkout
-      - run: ./gradlew --console=plain --stop
-      - run: ./gradlew --console=plain testClasses
-      - run: ./gradlew --console=plain check -x test-suite:test --no-daemon
-      - run: ./gradlew --console=plain test-suite:test --no-daemon
+
+      - persist_to_workspace:
+          root: ~/repo
+          paths:
+            - ./*
+
+  test:
+    <<: *defaults
+
+    steps:
+      - attach_workspace:
+          at: ~/repo
+
+      - run:
+          name: Stop Gradle Daemon 
+          command: ./gradlew --stop
+
+
+      - run:
+          name: Gradle Check without Test-Suite:Test
+          command: JVM_OPTS=-Xmx1g ./gradlew --console=plain check -x test-suite:test --no-daemon --max-workers=1 -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxPermSize=256m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+
+
+      - run:
+          name: Gradle Test-Suite:test
+          command: JVM_OPTS=-Xmx1g ./gradlew --console=plain test-suite:test --no-daemon --max-workers=1 -Dorg.gradle.jvmargs="-Xmx1g -XX:MaxPermSize=256m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+          
+      - run:
+          name: Files
+          command: find . -type f -name "*.xml" | grep "build/test-results"
+          when: always
+
+      - run:
+          name: Test Results Folder
+          command: mkdir ~/test-results
+          when: always          
+
+      - run:
+          name: Copy Test Results
+          command: find . -type f -name "*.xml" | grep "build/test-results" | xargs cp -t ~/test-results/
+          when: always
+
+      - store_test_results:
+          path: ~/test-results
+          when: always
+
+      - save_cache:
+          paths:
+            - ~/repo
+          key: repo-v1-{{ .Branch }}-{{ .Revision }}
+
+      - save_cache:
+          paths:
+            - ~/.m2
+          key: m2-v1-{{ .Branch }}-{{ .Revision }}
+          when: always          
+
+      - persist_to_workspace:
+          root: ~/repo
+          paths:
+            - ./*
+
+
+workflows:
+  version: 2
+
+  main:
+    jobs:
+      - checkout
+      - test:
+          requires:
+            - checkout
+      - release_snapshot:
+          requires:
+            - test
+          filters:
+            branches:
+              only: master
+      - release:
+          requires:
+            - test
+          filters:
+            branches:
+              only: release
